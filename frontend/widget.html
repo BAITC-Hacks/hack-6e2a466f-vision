@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ЭКТ — виджет помощника</title>
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/ux.css"><link rel="stylesheet" href="/static/widget.css">
+</head>
+<body data-embedded="true">
+  <main class="shell">
+    <header class="topbar"><span class="brand"><span class="brand-mark">э</span><span>ЭКТ <small>помощник по каталогу</small></span></span><a class="cart-link" href="/cart" target="_blank" rel="noopener noreferrer">Демо-корзина ↗</a></header>
+    <section class="chat-panel"><div class="chat-head"><div class="avatar">э</div><div><strong>ЭКТ помощник</strong><span>Найдём товар и проверим наличие</span></div><button class="reset" id="reset" title="Начать заново" aria-label="Начать заново">↻</button></div><div id="messages" class="messages" aria-live="polite"><div class="message assistant">Здравствуйте! Напишите название, артикул или вопрос о товаре.</div></div><form id="chat-form" class="composer"><input id="question" autocomplete="off" placeholder="Ваш вопрос…" aria-label="Сообщение помощнику"><button aria-label="Отправить">↑</button></form><p class="disclaimer">В режиме OpenAI вопрос, недавние реплики и найденные сведения каталога отправляются в OpenAI API. Корзина демонстрационная.</p></section>
+    <section class="catalog-panel"><div class="section-heading"><div><p class="eyebrow">РЕЗУЛЬТАТЫ ПОИСКА</p><h2>Товары</h2></div><div id="connection" class="connection"><span class="dot"></span><span>Проверяем…</span></div></div><div id="notice" class="notice" hidden></div><div id="products" class="products" aria-live="polite"><div class="skeleton"></div></div></section>
+  </main><script src="/static/app.js" defer></script>
+</body></html>

@@ -16,6 +16,7 @@ from backend.chat import (
 )
 from backend.catalog import CatalogClient, CatalogError
 from backend.config import settings
+from backend.demo_data import DEMO_PRODUCTS, demo_product
 from backend.session import SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,11 +34,6 @@ def ai_configured() -> bool:
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     session_id: str = Field(min_length=8, max_length=100)
-
-DEMO_PRODUCTS = [
-    {"id": "demo-1", "sku": "DEMO-001", "name": "Автоматический выключатель (демо)", "description": "Демонстрационная карточка; данные не получены из ekt.kz.", "category": "Демо", "price": None, "stock": None, "availability": None, "characteristics": None, "certificates": None, "url": None, "raw": {"demo": True}},
-]
-
 
 async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     """Hydrate a small relevant shortlist before comparing real catalog characteristics and stock."""
@@ -64,9 +60,20 @@ async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any
     return find_alternatives(target, [item for item in detailed if item is not None], limit=3)
 
 
+async def alternatives_for(target: dict[str, Any], products: list[dict[str, Any]], mode: str) -> tuple[list[dict[str, Any]], str | None]:
+    if mode == "demo":
+        return find_alternatives(target, products, limit=3)
+    return await live_alternatives(target, products)
+
+
 @app.get("/", include_in_schema=False)
 async def home() -> FileResponse:
     return FileResponse(ROOT / "frontend" / "index.html")
+
+
+@app.get("/widget", include_in_schema=False)
+async def widget_page() -> FileResponse:
+    return FileResponse(ROOT / "frontend" / "widget.html")
 
 
 @app.get("/cart", include_in_schema=False)
@@ -104,7 +111,7 @@ async def product_detail(product_id: str) -> dict[str, Any]:
     except CatalogError as exc:
         if catalog.configured:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        item = next((item for item in DEMO_PRODUCTS if item["id"] == product_id), None)
+        item = demo_product(product_id)
         if item is None:
             raise HTTPException(status_code=404, detail="Товар не найден.") from exc
         return {"mode": "demo", "product": item}
@@ -146,18 +153,24 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
 
     pending = cart.pending(request.session_id)
     if pending:
+        pending_mode = "demo" if demo_product(str(pending["product_id"])) is not None else "live"
         if is_refusal(message):
             cart.cancel(request.session_id)
-            return {"answer": "Хорошо, товар не добавлен. Корзина не изменилась.", "products": [], "cart": cart.contents(request.session_id), "catalog_mode": "live"}
+            return {"answer": "Хорошо, товар не добавлен. Корзина не изменилась.", "products": [], "cart": cart.contents(request.session_id), "catalog_mode": pending_mode}
         if is_confirmation(message):
             if pending["quantity"] is None:
-                return {"answer": "Сначала укажите количество в штуках или напишите «отмена».", "products": [], "catalog_mode": "live"}
-            if not catalog.configured:
-                raise HTTPException(status_code=409, detail="Нельзя подтвердить demo-товар: нужен товар из live-каталога.")
-            try:
-                fresh = await catalog.product(str(pending["product_id"]))
-            except CatalogError as exc:
-                raise HTTPException(status_code=502, detail="Не удалось перепроверить товар и остаток. Корзина не изменилась.") from exc
+                return {"answer": "Сначала укажите количество в штуках или напишите «отмена».", "products": [], "catalog_mode": pending_mode}
+            if pending_mode == "demo":
+                if catalog.configured:
+                    raise HTTPException(status_code=409, detail="Режим каталога изменился; начните добавление заново.")
+                fresh = demo_product(str(pending["product_id"]))
+            else:
+                if not catalog.configured:
+                    raise HTTPException(status_code=409, detail="Live-каталог не настроен; корзина не изменилась.")
+                try:
+                    fresh = await catalog.product(str(pending["product_id"]))
+                except CatalogError as exc:
+                    raise HTTPException(status_code=502, detail="Не удалось перепроверить товар и остаток. Корзина не изменилась.") from exc
             state, stock = stock_state(fresh)
             if state != "available" or stock is None or stock < 1:
                 raise HTTPException(status_code=409, detail="Свежий доступный остаток не подтверждён. Корзина не изменилась.")
@@ -166,26 +179,31 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=f"{exc} Корзина не изменилась.") from exc
             if updated.get("already_confirmed"):
-                return {"answer": "Это добавление уже было обработано; корзина не изменена повторно.", "products": [fresh], "cart": updated, "catalog_mode": "live", "cart_url": "/cart"}
-            return {"answer": f"Добавлено {pending['quantity']} шт. «{fresh.get('name') or fresh.get('sku') or fresh['id']}» в демонстрационную корзину.", "products": [fresh], "cart": updated, "catalog_mode": "live", "cart_url": "/cart"}
+                return {"answer": "Это добавление уже было обработано; корзина не изменена повторно.", "products": [fresh], "cart": updated, "catalog_mode": pending_mode, "cart_url": "/cart"}
+            return {"answer": f"Добавлено {pending['quantity']} шт. «{fresh.get('name') or fresh.get('sku') or fresh['id']}» в демонстрационную корзину.", "products": [fresh], "cart": updated, "catalog_mode": pending_mode, "cart_url": "/cart"}
         quantity = extract_quantity(message)
         if quantity is not None:
             if quantity <= 0:
-                return {"answer": "Количество должно быть положительным. Добавление пока не подтверждено.", "products": [], "catalog_mode": "live"}
+                return {"answer": "Количество должно быть положительным. Добавление пока не подтверждено.", "products": [], "catalog_mode": pending_mode}
             cart.set_quantity(request.session_id, quantity)
-            if not catalog.configured:
-                raise HTTPException(status_code=409, detail="Для подготовки добавления нужен live-каталог.")
-            try:
-                pending_product = await catalog.product(str(pending["product_id"]))
-            except CatalogError as exc:
-                raise HTTPException(status_code=502, detail="Не удалось загрузить карточку товара.") from exc
+            if pending_mode == "demo":
+                if catalog.configured:
+                    raise HTTPException(status_code=409, detail="Режим каталога изменился; начните добавление заново.")
+                pending_product = demo_product(str(pending["product_id"]))
+            else:
+                if not catalog.configured:
+                    raise HTTPException(status_code=409, detail="Live-каталог не настроен.")
+                try:
+                    pending_product = await catalog.product(str(pending["product_id"]))
+                except CatalogError as exc:
+                    raise HTTPException(status_code=502, detail="Не удалось загрузить карточку товара.") from exc
             state, stock = stock_state(pending_product)
             if state != "available" or stock is None:
-                return {"answer": "Наличие с точным остатком не подтверждено. Добавить товар нельзя.", "products": [pending_product], "catalog_mode": "live"}
+                return {"answer": "Наличие с точным остатком не подтверждено. Добавить товар нельзя.", "products": [pending_product], "catalog_mode": pending_mode}
             if quantity > stock:
-                return {"answer": f"Запрошено {quantity} шт., а в каталоге доступно {stock}. Укажите меньшее количество или напишите «отмена».", "products": [pending_product], "catalog_mode": "live"}
-            return {"answer": f"Подтвердите добавление: {quantity} шт. «{pending_product.get('name') or pending_product.get('sku') or pending_product['id']}» в демонстрационную корзину. Ответьте «Подтверждаю» или «Отмена».", "products": [pending_product], "catalog_mode": "live", "pending_confirmation": True}
-        return {"answer": "Добавление ещё не выполнено. Ответьте точным количеством в штуках, «Подтверждаю» или «Отмена».", "products": [], "catalog_mode": "live", "pending_confirmation": True}
+                return {"answer": f"Запрошено {quantity} шт., а в каталоге доступно {stock}. Укажите меньшее количество или напишите «отмена».", "products": [pending_product], "catalog_mode": pending_mode}
+            return {"answer": f"Подтвердите добавление: {quantity} шт. «{pending_product.get('name') or pending_product.get('sku') or pending_product['id']}» в демонстрационную корзину. Ответьте «Подтверждаю» или «Отмена».", "products": [pending_product], "catalog_mode": pending_mode, "pending_confirmation": True}
+        return {"answer": "Добавление ещё не выполнено. Ответьте точным количеством в штуках, «Подтверждаю» или «Отмена».", "products": [], "catalog_mode": pending_mode, "pending_confirmation": True}
 
     mode = "live"
     if catalog.configured:
@@ -224,11 +242,10 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
             raise HTTPException(status_code=502, detail="Не удалось выполнить поиск в каталоге. Попробуйте позже.")
     else:
         mode = "demo"
+        all_products = DEMO_PRODUCTS
         found = search_products(DEMO_PRODUCTS, message)
 
     if is_purchase_intent(message):
-        if mode != "live" or not catalog.configured:
-            return {"answer": "Добавление доступно только для товара, подтверждённого live-каталогом. Демо-карточки в корзину не добавляются.", "products": found, "catalog_mode": mode, "cart": cart.contents(request.session_id)}
         if not found:
             return {"answer": "Не нашёл товар для добавления. Уточните название или артикул.", "products": [], "catalog_mode": mode}
         if len(found) > 1 and not any(str(p.get("sku") or "").casefold() in message.casefold() for p in found if p.get("sku")):
@@ -237,16 +254,22 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
         selected = found[0]
         if selected.get("id") is None:
             return {"answer": "У товара нет каталожного идентификатора; добавить его нельзя.", "products": [selected], "catalog_mode": mode}
-        try:
-            selected = await catalog.product(str(selected["id"]))
-        except CatalogError as exc:
-            raise HTTPException(status_code=502, detail="Не удалось перепроверить карточку товара.") from exc
+        if mode == "demo":
+            selected = demo_product(str(selected["id"]))
+            if selected is None:
+                raise HTTPException(status_code=409, detail="Демо-товар не найден; корзина не изменилась.")
+        else:
+            try:
+                selected = await catalog.product(str(selected["id"]))
+            except CatalogError as exc:
+                raise HTTPException(status_code=502, detail="Не удалось перепроверить карточку товара.") from exc
         state, stock = stock_state(selected)
         if state != "available" or stock is None or stock < 1:
-            alternatives, limitation = await live_alternatives(selected, all_products)
+            alternatives, limitation = await alternatives_for(selected, all_products, mode)
             if alternatives:
                 explain = "\n".join(f"• {row['product'].get('name') or row['product'].get('sku')}: {row['reason']}" for row in alternatives)
-                answer = f"У выбранного товара нет подтверждённого доступного остатка. Возможные аналоги из каталога:\n{explain}\nЕсли хотите добавить один из них, напишите его артикул и количество."
+                source = "демо-набора" if mode == "demo" else "каталога"
+                answer = f"У выбранного товара нет подтверждённого доступного остатка. Возможные аналоги из {source}:\n{explain}\nЕсли хотите добавить один из них, напишите его артикул и количество."
                 if ai_configured():
                     try:
                         reply = await answer_with_openai(message, [selected] + [row["product"] for row in alternatives], sessions.recent(request.session_id), alternatives)
@@ -269,10 +292,10 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
         return {"answer": answer, "products": [selected], "catalog_mode": mode, "pending_confirmation": True}
 
     alternatives = []
-    if mode == "live" and found:
+    if found:
         state, stock = stock_state(found[0])
         if state == "unavailable" or stock == 0:
-            alternatives, limitation = await live_alternatives(found[0], all_products)
+            alternatives, limitation = await alternatives_for(found[0], all_products, mode)
     response_products = found + [row["product"] for row in alternatives]
     if ai_configured():
         try:
@@ -281,10 +304,11 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
         except AiError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     else:
-        answer = fallback_answer(message, found)
+        answer = fallback_answer(message, found, mode)
     if alternatives:
-        answer += "\n\nПроверенные аналоги из каталога:\n" + "\n".join(f"• {row['product'].get('name') or row['product'].get('sku')}: {row['reason']}" for row in alternatives)
-    elif mode == "live" and found and (stock_state(found[0])[0] == "unavailable"):
+        source = "демо-набора" if mode == "demo" else "каталога"
+        answer += f"\n\nПроверенные аналоги из {source}:\n" + "\n".join(f"• {row['product'].get('name') or row['product'].get('sku')}: {row['reason']}" for row in alternatives)
+    elif found and (stock_state(found[0])[0] == "unavailable"):
         answer += f"\n\n{limitation}"
     return {
         "answer": answer,

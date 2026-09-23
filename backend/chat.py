@@ -8,9 +8,12 @@ def search_products(products: list[dict[str, Any]], query: str, limit: int = 5) 
     ranked: list[tuple[int, int, dict[str, Any]]] = []
     for index, product in enumerate(products):
         sku = str(product.get("sku") or "").casefold()
+        product_id = str(product.get("id") or "").casefold()
         name = str(product.get("name") or "").casefold()
         searchable = " ".join(str(v) for v in product.values() if isinstance(v, (str, int, float))).casefold()
-        score = (100 if sku and sku == query_clean else 0) + (15 if name and query_clean in name else 0)
+        score = (100 if sku and sku == query_clean else 70 if sku and sku in tokens else 0)
+        score += 60 if product_id and product_id in tokens else 0
+        score += 15 if name and query_clean in name else 0
         score += sum(3 for token in tokens if token in searchable)
         if score:
             ranked.append((score, -index, product))
@@ -18,9 +21,10 @@ def search_products(products: list[dict[str, Any]], query: str, limit: int = 5) 
     return [row[2] for row in ranked[:limit]]
 
 
-def fallback_answer(question: str, products: list[dict[str, Any]]) -> str:
+def fallback_answer(question: str, products: list[dict[str, Any]], mode: str = "live") -> str:
+    source = "демонстрационных данных" if mode == "demo" else "загруженных данных каталога"
     if not products:
-        return "Подходящих товаров среди загруженных данных каталога не нашлось. Уточните название или артикул."
+        return f"Подходящих товаров среди {source} не нашлось. Уточните название, артикул или характеристики: без них нельзя надёжно сравнить аналоги."
     chunks = []
     for p in products[:3]:
         facts = [str(p.get("name") or "Название не указано")]
@@ -28,10 +32,12 @@ def fallback_answer(question: str, products: list[dict[str, Any]]) -> str:
             value = p.get(key)
             if value is not None and value != "":
                 facts.append(f"{label}: {value}")
-        if p.get("characteristics"):
-            facts.append(f"Характеристики: {p['characteristics']}")
+        features = _features(p)
+        if features:
+            facts.append("Характеристики: " + ", ".join(f"{key}: {value}" for key, value in list(features.items())[:4]))
         chunks.append("; ".join(facts))
-    return "Нашёл в каталоге:\n" + "\n".join(f"• {chunk}" for chunk in chunks)
+    intro = "Нашёл в демонстрационном наборе" if mode == "demo" else "Нашёл в каталоге"
+    return intro + ":\n" + "\n".join(f"• {chunk}" for chunk in chunks)
 
 
 def stock_state(product: dict[str, Any]) -> tuple[str, int | None]:
@@ -93,7 +99,8 @@ def find_alternatives(target: dict[str, Any], products: list[dict[str, Any]], li
         features = _features(product)
         shared = [key for key in target_features.keys() & features.keys() if target_features[key] == features[key]]
         same_category = bool(target_category and target_category == str(product.get("category") or "").casefold().strip())
-        if not same_category and not shared:
+        # A broad category alone is not enough evidence of a compatible replacement.
+        if not shared:
             continue
         candidates.append((len(shared) * 2 + int(same_category), product, sorted(shared), same_category, stock))
     candidates.sort(key=lambda row: row[0], reverse=True)

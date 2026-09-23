@@ -12,6 +12,7 @@ from backend.chat import (
     is_confirmation,
     is_purchase_intent,
     is_refusal,
+    search_products,
     stock_state,
 )
 
@@ -42,6 +43,13 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(extract_quantity("количество: -2"), -2)
         self.assertIsNone(extract_quantity("Добавь в корзину ABC-30"))
         self.assertTrue(is_purchase_intent("Добавь в корзину ABC-30"))
+
+    def test_sku_in_purchase_sentence_outranks_generic_word_match(self):
+        products = [
+            {"id": "1", "sku": "OTHER", "name": "Штучный товар"},
+            {"id": "2", "sku": "200300285_", "name": "Автомат"},
+        ]
+        self.assertEqual(search_products(products, "Добавь 200300285_ 1 шт")[0]["id"], "2")
 
 
 class DemoCartTests(unittest.TestCase):
@@ -100,6 +108,13 @@ class AlternativesTests(unittest.TestCase):
     def test_missing_shared_fields_explains_why_no_analogue_can_be_compared(self):
         target = {"id": "old", "category": None, "characteristics": None, "stock": 0}
         alternatives, limitation = find_alternatives(target, [{"id": "candidate", "stock": 3}])
+        self.assertEqual(alternatives, [])
+        self.assertIsNotNone(limitation)
+
+    def test_category_alone_does_not_claim_technical_compatibility(self):
+        target = {"id": "old", "category": "Кабели", "characteristics": {"сечение": "2,5"}, "stock": 0}
+        candidate = {"id": "other", "category": "Кабели", "characteristics": {"сечение": "10"}, "stock": 4}
+        alternatives, limitation = find_alternatives(target, [candidate])
         self.assertEqual(alternatives, [])
         self.assertIsNotNone(limitation)
 
