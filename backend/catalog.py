@@ -153,6 +153,7 @@ def normalize_product(raw: dict[str, Any]) -> dict[str, Any]:
         "id": ("id", "product_id"), "sku": ("sku", "article", "articul", "code"),
         "name": ("name", "title", "product_name"), "description": ("description", "text"),
         "category": ("category", "category_name"), "price": ("price", "cost"),
+        "currency": ("currency", "currency_code", "price_currency"),
         "stock": ("stock", "quantity", "amount", "balance"),
         "availability": ("availability", "available", "in_stock", "status"),
         "characteristics": ("characteristics", "attributes", "properties", "specifications"),

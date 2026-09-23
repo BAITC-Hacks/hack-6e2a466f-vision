@@ -181,7 +181,81 @@
       card.append(line(entry.matched.length ? `Совпало: ${entry.matched.join('; ')}` : 'Совпадение характеристик пока не подтверждено.'));
       if (entry.conflicted?.length) card.append(line(`Противоречит: ${entry.conflicted.join('; ')}.`, 'requirements-warning'));
       if (entry.unknown.length) card.append(line(`Не удалось проверить: ${entry.unknown.join(', ')}.`));
-      if (draft?.max_budget != null) card.append(line('Бюджет требует отдельной проверки валюты и цены.'));
+      if (draft?.max_budget != null) card.append(line('Расчёт бюджета для выбранных позиций появится в demo cart.'));
+      const addArea = document.createElement('div');
+      addArea.className = 'requirements-cart-action';
+      const stock = Number(item.stock);
+      if (item.stock == null || !Number.isInteger(stock) || stock <= 0) {
+        addArea.append(line('Точный положительный остаток не подтверждён: добавить в demo cart нельзя.'));
+      } else {
+        const quantity = document.createElement('input');
+        quantity.type = 'number';
+        quantity.min = '1';
+        quantity.step = '1';
+        quantity.value = String(draft?.quantity || 1);
+        quantity.setAttribute('aria-label', `Количество для ${item.name || item.id}`);
+        const prepare = document.createElement('button');
+        prepare.type = 'button';
+        prepare.textContent = 'Добавить в demo cart';
+        const pending = document.createElement('div');
+        prepare.addEventListener('click', async () => {
+          const count = Number(quantity.value);
+          if (!Number.isInteger(count) || count < 1) {
+            pending.replaceChildren(line('Укажите положительное целое количество.', 'requirements-warning'));
+            return;
+          }
+          prepare.disabled = true;
+          try {
+            const response = await fetch('/api/cart/prepare', {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({session_id: sessionId, product_id: String(item.id), quantity: count}),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || 'Не удалось подготовить добавление.');
+            pending.replaceChildren(line(`Подтвердите: ${payload.quantity} шт. «${payload.name}» в демонстрационную корзину.`));
+            const confirm = document.createElement('button');
+            confirm.type = 'button';
+            confirm.textContent = 'Подтвердить добавление';
+            confirm.addEventListener('click', async () => {
+              confirm.disabled = true;
+              try {
+                const response = await fetch('/api/cart/confirm', {
+                  method: 'POST', headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({session_id: sessionId, product_id: String(item.id), quantity: count}),
+                });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload.detail || 'Добавление не выполнено.');
+                const link = document.createElement('a');
+                link.href = '/cart';
+                link.textContent = 'Открыть demo cart';
+                pending.replaceChildren(line(payload.already_confirmed ? 'Это подтверждение уже обработано; дубль не создан.' : 'Товар добавлен в demo cart.'), link);
+              } catch (error) {
+                pending.append(line(error.message || 'Ошибка добавления.', 'requirements-warning'));
+                confirm.disabled = false;
+              }
+            });
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.textContent = 'Отмена';
+            cancel.addEventListener('click', async () => {
+              cancel.disabled = true;
+              try {
+                const response = await fetch('/api/cart/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: sessionId})});
+                if (!response.ok) throw new Error('Не удалось отменить добавление.');
+                pending.replaceChildren(line('Добавление отменено.'));
+              } catch (error) {
+                pending.append(line(error.message, 'requirements-warning'));
+                cancel.disabled = false;
+              }
+            });
+            pending.append(confirm, cancel);
+          } catch (error) {
+            pending.replaceChildren(line(error.message || 'Ошибка проверки остатка.', 'requirements-warning'));
+          } finally { prepare.disabled = false; }
+        });
+        addArea.append(quantity, prepare, pending);
+      }
+      card.append(addArea);
       results.append(card);
     }
     if (data.products.length >= 2 && draft?.requirements.length) {

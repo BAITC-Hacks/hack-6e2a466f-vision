@@ -24,6 +24,7 @@ from backend.requirements import (
 )
 from backend.requirement_search import search_requirements
 from backend.session import SessionStore
+from backend.shopping_list import cheaper_candidates, summarize_cart
 
 ROOT = Path(__file__).resolve().parent.parent
 app = FastAPI(title="ekt.kz AI Assistant", version="0.1.0")
@@ -58,6 +59,20 @@ class RequirementsSearchRequest(BaseModel):
 class RequirementsCompareRequest(BaseModel):
     session_id: str = Field(min_length=8, max_length=100)
     product_ids: list[str] = Field(min_length=2, max_length=4)
+
+
+class CartActionRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=100)
+    product_id: str = Field(min_length=1, max_length=100)
+    quantity: int = Field(ge=1, le=100000)
+
+
+class CartQuantityRequest(BaseModel):
+    quantity: int = Field(ge=1, le=100000)
+
+
+class CartSessionRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=100)
 
 async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     """Hydrate a small relevant shortlist before comparing real catalog characteristics and stock."""
@@ -143,7 +158,118 @@ async def product_detail(product_id: str) -> dict[str, Any]:
 
 @app.get("/api/cart/{session_id}")
 async def get_cart(session_id: str) -> dict[str, Any]:
-    return cart.contents(session_id)
+    contents = cart.contents(session_id)
+    saved = sessions.get_requirements(session_id)
+    requirements = ShoppingRequirements.model_validate(saved) if saved else None
+    return {**contents, "pricing": summarize_cart(contents, requirements)}
+
+
+async def fresh_cart_product(product_id: str, mode: str) -> dict[str, Any]:
+    if mode == "demo":
+        if catalog.configured:
+            raise HTTPException(status_code=409, detail="Режим каталога изменился; начните действие заново.")
+        product = demo_product(product_id)
+    else:
+        if not catalog.configured:
+            raise HTTPException(status_code=409, detail="Live-каталог недоступен; список закупки не изменён.")
+        try:
+            product = await catalog.product(product_id)
+        except CatalogError as exc:
+            raise HTTPException(status_code=502, detail="Не удалось повторно проверить карточку товара; список не изменён.") from exc
+    if product is None or str(product.get("id")) != product_id:
+        raise HTTPException(status_code=409, detail="Товар не подтверждён каталогом; список не изменён.")
+    return product
+
+
+def confirmed_stock(product: dict[str, Any], quantity: int) -> int:
+    state, stock = stock_state(product)
+    if state != "available" or stock is None:
+        raise HTTPException(status_code=409, detail="Точный остаток неизвестен; в demo cart товар не добавлен.")
+    if quantity > stock:
+        raise HTTPException(status_code=409, detail=f"Запрошено {quantity} шт., подтверждённый остаток — {stock}. Список не изменён.")
+    return stock
+
+
+@app.post("/api/cart/prepare")
+async def prepare_cart_item(request: CartActionRequest) -> dict[str, Any]:
+    saved = sessions.get_requirements(request.session_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Сначала сохраните условия и найдите товар.")
+    found = await search_requirements(catalog, ShoppingRequirements.model_validate(saved),
+                                      demo_products=None if catalog.configured else DEMO_PRODUCTS)
+    if request.product_id not in {str(row["product"]["id"]) for row in found["products"]}:
+        raise HTTPException(status_code=422, detail="Товар отсутствует в текущих результатах поиска.")
+    fresh = await fresh_cart_product(request.product_id, found["mode"])
+    stock = confirmed_stock(fresh, request.quantity)
+    current = cart.contents(request.session_id)
+    already_selected = sum(row["quantity"] for row in current["items"] if str(row["product"].get("id")) == request.product_id)
+    if already_selected + request.quantity > stock:
+        raise HTTPException(status_code=409, detail=f"В списке уже {already_selected} шт.; подтверждённый остаток — {stock}.")
+    cart.prepare(request.session_id, request.product_id, request.quantity)
+    return {"pending_confirmation": True, "product_id": request.product_id,
+            "name": fresh.get("name") or fresh.get("sku") or request.product_id,
+            "quantity": request.quantity, "message": "Подтвердите добавление в demo cart отдельным действием."}
+
+
+@app.post("/api/cart/confirm")
+async def confirm_cart_item(request: CartActionRequest) -> dict[str, Any]:
+    pending = cart.pending(request.session_id)
+    if pending is None:
+        current = cart.contents(request.session_id)
+        if cart.was_confirmed(request.session_id, request.product_id, request.quantity):
+            return {"already_confirmed": True, "cart": {**current, "pricing": summarize_cart(current)}}
+        raise HTTPException(status_code=409, detail="Нет ожидающего подтверждения; список не изменён.")
+    if str(pending["product_id"]) != request.product_id or pending["quantity"] != request.quantity:
+        raise HTTPException(status_code=409, detail="Подтверждение относится к другому товару или количеству.")
+    mode = "demo" if demo_product(request.product_id) is not None else "live"
+    fresh = await fresh_cart_product(request.product_id, mode)
+    stock = confirmed_stock(fresh, request.quantity)
+    try:
+        result = cart.add_confirmed(request.session_id, fresh, request.quantity, stock)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"already_confirmed": result.get("already_confirmed", False),
+            "cart": {**result, "pricing": summarize_cart(result)}}
+
+
+@app.post("/api/cart/cancel")
+async def cancel_cart_item(request: CartSessionRequest) -> dict[str, bool]:
+    cart.cancel(request.session_id)
+    return {"cancelled": True}
+
+
+@app.patch("/api/cart/{session_id}/items/{product_id}")
+async def change_cart_item(session_id: str, product_id: str, request: CartQuantityRequest) -> dict[str, Any]:
+    current = cart.contents(session_id)
+    entry = next((row for row in current["items"] if str(row["product"].get("id")) == product_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Товар отсутствует в demo cart.")
+    mode = "demo" if demo_product(product_id) is not None else "live"
+    fresh = await fresh_cart_product(product_id, mode)
+    stock = confirmed_stock(fresh, request.quantity)
+    try:
+        result = cart.change_quantity(session_id, fresh, request.quantity, stock)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {**result, "pricing": summarize_cart(result)}
+
+
+@app.delete("/api/cart/{session_id}/items/{product_id}")
+async def remove_cart_item(session_id: str, product_id: str) -> dict[str, Any]:
+    result = cart.remove_item(session_id, product_id)
+    return {**result, "pricing": summarize_cart(result)}
+
+
+@app.get("/api/cart/{session_id}/budget-options")
+async def cart_budget_options(session_id: str) -> dict[str, Any]:
+    saved = sessions.get_requirements(session_id)
+    requirements = ShoppingRequirements.model_validate(saved) if saved else None
+    current = cart.contents(session_id)
+    if not requirements or requirements.max_budget is None or not current["items"]:
+        return {"options": [], "coverage_complete": True}
+    found = await search_requirements(catalog, requirements, demo_products=None if catalog.configured else DEMO_PRODUCTS)
+    return {"options": cheaper_candidates(current, requirements, found["products"]),
+            "coverage_complete": found["coverage_complete"]}
 
 
 @app.get("/api/session/{session_id}")
