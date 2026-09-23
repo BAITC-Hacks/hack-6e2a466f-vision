@@ -17,6 +17,10 @@ from backend.chat import (
 from backend.catalog import CatalogClient, CatalogError
 from backend.config import settings
 from backend.demo_data import DEMO_PRODUCTS, demo_product
+from backend.requirements import (
+    DEMO_ATTRIBUTES, LIVE_ATTRIBUTES, ShoppingRequirements, extract_with_openai,
+    offline_extract, validate_attributes,
+)
 from backend.session import SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,9 +35,17 @@ def ai_configured() -> bool:
     return bool(settings.openai_api_key and settings.openai_model)
 
 
+def known_attributes() -> list[str]:
+    return LIVE_ATTRIBUTES if catalog.configured else DEMO_ATTRIBUTES
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     session_id: str = Field(min_length=8, max_length=100)
+
+
+class RequirementsUpdate(BaseModel):
+    requirements: ShoppingRequirements
 
 async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     """Hydrate a small relevant shortlist before comparing real catalog characteristics and stock."""
@@ -132,6 +144,43 @@ async def clear_session(session_id: str) -> dict[str, bool]:
     cart.cancel(session_id)
     sessions.clear(session_id)
     return {"cleared": True}
+
+
+@app.post("/api/requirements/extract")
+async def extract_shopping_requirements(request: ChatRequest) -> dict[str, Any]:
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Опишите, какой товар нужен.")
+    available = known_attributes()
+    if ai_configured():
+        try:
+            extracted = await extract_with_openai(message, sessions.recent(request.session_id), available_attributes=available)
+        except AiError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        mode = "openai"
+    else:
+        extracted = offline_extract(message, available)
+        mode = "offline"
+    sessions.save_requirements(request.session_id, extracted.model_dump())
+    return {"requirements": extracted.model_dump(), "available_attributes": available, "ai_mode": mode}
+
+
+@app.get("/api/requirements/{session_id}")
+async def get_shopping_requirements(session_id: str) -> dict[str, Any]:
+    return {"requirements": sessions.get_requirements(session_id), "available_attributes": known_attributes()}
+
+
+@app.put("/api/requirements/{session_id}")
+async def update_shopping_requirements(session_id: str, request: RequirementsUpdate) -> dict[str, Any]:
+    available = known_attributes()
+    try:
+        updated = validate_attributes(request.requirements, available)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if updated.clarification_question and any(item.attribute in updated.clarification_question.casefold() for item in updated.requirements):
+        updated = updated.model_copy(update={"clarification_question": None})
+    sessions.save_requirements(session_id, updated.model_dump())
+    return {"requirements": updated.model_dump(), "available_attributes": available}
 
 
 @app.post("/api/chat")

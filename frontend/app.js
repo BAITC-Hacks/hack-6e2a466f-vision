@@ -115,6 +115,7 @@ $('#reset').addEventListener('click', async () => {
     if (!response.ok) throw new Error('Не удалось начать новый диалог. Попробуйте ещё раз.');
     messagesNode.innerHTML = '';
     addMessage('Здравствуйте! Подскажу по товарам и покажу сведения, доступные в каталоге. С чего начнём?');
+    document.dispatchEvent(new Event('ekt:session-reset'));
   } catch (error) {
     addMessage(error.message || 'Ошибка сброса диалога.', 'error');
   }

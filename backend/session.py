@@ -18,6 +18,8 @@ class SessionStore:
             db.execute("CREATE INDEX IF NOT EXISTS chat_history_session ON chat_history(session_id, id)")
             db.execute("""CREATE TABLE IF NOT EXISTS chat_selection (
                 session_id TEXT PRIMARY KEY, product_ids TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS shopping_requirements (
+                session_id TEXT PRIMARY KEY, data_json TEXT NOT NULL)""")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -50,6 +52,7 @@ class SessionStore:
         with self._connect() as db:
             db.execute("DELETE FROM chat_history WHERE session_id=?", (session_id,))
             db.execute("DELETE FROM chat_selection WHERE session_id=?", (session_id,))
+            db.execute("DELETE FROM shopping_requirements WHERE session_id=?", (session_id,))
 
     def remember_products(self, session_id: str, product_ids: list[str]) -> None:
         with self._connect() as db:
@@ -61,3 +64,14 @@ class SessionStore:
         with self._connect() as db:
             row = db.execute("SELECT product_ids FROM chat_selection WHERE session_id=?", (session_id,)).fetchone()
         return json.loads(row["product_ids"]) if row else []
+
+    def save_requirements(self, session_id: str, data: dict) -> None:
+        with self._connect() as db:
+            db.execute("""INSERT INTO shopping_requirements(session_id, data_json) VALUES(?,?)
+                ON CONFLICT(session_id) DO UPDATE SET data_json=excluded.data_json""",
+                (session_id, json.dumps(data, ensure_ascii=False)))
+
+    def get_requirements(self, session_id: str) -> dict | None:
+        with self._connect() as db:
+            row = db.execute("SELECT data_json FROM shopping_requirements WHERE session_id=?", (session_id,)).fetchone()
+        return json.loads(row["data_json"]) if row else None
