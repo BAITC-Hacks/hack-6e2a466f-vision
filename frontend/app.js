@@ -1,6 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 const productsNode = $('#products');
 const messagesNode = $('#messages');
+const sessionId = localStorage.getItem('ekt-demo-session') || crypto.randomUUID();
+localStorage.setItem('ekt-demo-session', sessionId);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
 function renderProducts(items, mode) {
@@ -8,7 +10,7 @@ function renderProducts(items, mode) {
     productsNode.innerHTML = '<p class="product">На этой странице товаров нет.</p>';
     return;
   }
-  productsNode.innerHTML = items.map((p) => `<article class="product"><div class="product-top"><span class="sku">${esc(p.sku || `ID ${p.id ?? '—'}`)}</span><span class="badge">${mode === 'demo' ? 'Демо-данные' : 'Каталог'}</span></div><h3>${esc(p.name || 'Название не указано')}</h3><p>${esc(p.description || 'Описание в API не указано.')}</p><div class="product-price">${p.price == null ? 'Цена: нет данных' : `Цена: ${esc(p.price)}`}</div></article>`).join('');
+  productsNode.innerHTML = items.map((p) => `<article class="product"><div class="product-top"><span class="sku">${esc(p.sku || `ID ${p.id ?? '—'}`)}</span><span class="badge">${mode === 'demo' ? 'Демо-данные' : 'Каталог'}</span></div><h3>${esc(p.name || 'Название не указано')}</h3><p>${esc(p.description || 'Описание в API не указано.')}</p><div class="product-price">${p.price == null ? 'Цена: нет данных' : `Цена: ${esc(p.price)}`}</div>${mode === 'live' && p.id != null ? `<button class="add-button" data-add="${esc(p.sku || p.name || p.id)}">Предложить добавить</button>` : ''}</article>`).join('');
 }
 
 function addMessage(text, role = 'assistant') {
@@ -50,7 +52,7 @@ $('#chat-form').addEventListener('submit', async (event) => {
   submit.disabled = true;
   submit.textContent = '…';
   try {
-    const response = await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: question})});
+    const response = await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: question, session_id: sessionId})});
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || 'Не удалось получить ответ. Попробуйте ещё раз.');
     addMessage(result.answer);
@@ -63,7 +65,19 @@ $('#chat-form').addEventListener('submit', async (event) => {
   }
 });
 
-$('#reset').addEventListener('click', () => {
+productsNode.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-add]');
+  if (!button) return;
+  $('#question').value = `Добавь в корзину ${button.dataset.add}`;
+  $('#chat-form').requestSubmit();
+});
+
+$('#reset').addEventListener('click', async () => {
+  if (sessionId) {
+    try {
+      await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: 'отмена', session_id: sessionId})});
+    } catch { /* The reset still clears the visible chat when offline. */ }
+  }
   messagesNode.innerHTML = '';
   addMessage('Здравствуйте! Подскажу по товарам и покажу сведения, доступные в каталоге. С чего начнём?');
 });
