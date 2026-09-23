@@ -1,4 +1,6 @@
+import asyncio
 from pathlib import Path
+import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -6,19 +8,26 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from backend.ai import AiError, answer_with_openai
 from backend.cart import DemoCartAdapter
 from backend.chat import (
-    OpenAIError, compose_answer, extract_quantity, find_alternatives,
+    extract_quantity, fallback_answer, find_alternatives,
     is_confirmation, is_purchase_intent, is_refusal, search_products, stock_state,
 )
 from backend.catalog import CatalogClient, CatalogError
 from backend.config import settings
+from backend.session import SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
 app = FastAPI(title="ekt.kz AI Assistant", version="0.1.0")
 app.mount("/static", StaticFiles(directory=ROOT / "frontend"), name="static")
 catalog = CatalogClient()
 cart = DemoCartAdapter()
+sessions = SessionStore()
+
+
+def ai_configured() -> bool:
+    return bool(settings.openai_api_key and settings.openai_model)
 
 
 class ChatRequest(BaseModel):
@@ -28,6 +37,31 @@ class ChatRequest(BaseModel):
 DEMO_PRODUCTS = [
     {"id": "demo-1", "sku": "DEMO-001", "name": "Автоматический выключатель (демо)", "description": "Демонстрационная карточка; данные не получены из ekt.kz.", "category": "Демо", "price": None, "stock": None, "availability": None, "characteristics": None, "certificates": None, "url": None, "raw": {"demo": True}},
 ]
+
+
+async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+    """Hydrate a small relevant shortlist before comparing real catalog characteristics and stock."""
+    target_terms = set(re.findall(r"[\w-]{4,}", str(target.get("name") or "").casefold()))
+    shortlist = []
+    for product in products:
+        if product.get("id") is None or str(product["id"]) == str(target.get("id")):
+            continue
+        name_terms = set(re.findall(r"[\w-]{4,}", str(product.get("name") or "").casefold()))
+        overlap = len(target_terms & name_terms)
+        if overlap:
+            shortlist.append((overlap, product))
+    shortlist.sort(key=lambda row: row[0], reverse=True)
+    semaphore = asyncio.Semaphore(3)
+
+    async def detail(item: dict[str, Any]) -> dict[str, Any] | None:
+        async with semaphore:
+            try:
+                return await catalog.product(str(item["id"]))
+            except CatalogError:
+                return None
+
+    detailed = await asyncio.gather(*(detail(item) for _, item in shortlist[:8]))
+    return find_alternatives(target, [item for item in detailed if item is not None], limit=3)
 
 
 @app.get("/", include_in_schema=False)
@@ -40,20 +74,16 @@ async def cart_page() -> FileResponse:
     return FileResponse(ROOT / "frontend" / "cart.html")
 
 
-@app.get("/cart", include_in_schema=False)
-async def cart_page() -> FileResponse:
-    return FileResponse(ROOT / "frontend" / "cart.html")
-
-
 @app.get("/api/status")
 async def status() -> dict[str, Any]:
+    ai_mode = "openai" if ai_configured() else "offline"
     if not catalog.configured:
-        return {"mode": "demo", "connected": False, "ai_mode": "openai" if settings.openai_api_key else "fallback", "model": settings.openai_model if settings.openai_api_key else None, "message": "Не настроены учётные данные каталога. Показаны демонстрационные данные."}
+        return {"mode": "demo", "connected": False, "ai_mode": ai_mode, "model": settings.openai_model if ai_configured() else None, "message": "Не настроены учётные данные каталога. Показаны демонстрационные данные."}
     try:
         products, pagination = await catalog.products()
-        return {"mode": "live", "connected": True, "ai_mode": "openai" if settings.openai_api_key else "fallback", "model": settings.openai_model if settings.openai_api_key else None, "message": f"Каталог доступен. Получено товаров: {len(products)}.", "pagination": pagination}
+        return {"mode": "live", "connected": True, "ai_mode": ai_mode, "model": settings.openai_model if ai_configured() else None, "message": f"Каталог доступен. Получено товаров: {len(products)}.", "pagination": pagination}
     except CatalogError as exc:
-        return {"mode": "demo", "connected": False, "ai_mode": "openai" if settings.openai_api_key else "fallback", "model": settings.openai_model if settings.openai_api_key else None, "message": f"{exc} Показаны демонстрационные данные."}
+        return {"mode": "error", "connected": False, "ai_mode": ai_mode, "model": settings.openai_model if ai_configured() else None, "message": f"{exc} Каталог недоступен."}
 
 
 @app.get("/api/products")
@@ -85,11 +115,34 @@ async def get_cart(session_id: str) -> dict[str, Any]:
     return cart.contents(session_id)
 
 
+@app.get("/api/session/{session_id}")
+async def get_session(session_id: str) -> dict[str, Any]:
+    return {"messages": sessions.recent(session_id, limit=12), "pending_confirmation": cart.pending(session_id) is not None}
+
+
+@app.delete("/api/session/{session_id}")
+async def clear_session(session_id: str) -> dict[str, bool]:
+    cart.cancel(session_id)
+    sessions.clear(session_id)
+    return {"cleared": True}
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> dict[str, Any]:
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=422, detail="Сообщение не должно быть пустым.")
+    result = await _chat_impl(request, message)
+    if result.get("answer"):
+        sessions.append_exchange(request.session_id, message, result["answer"])
+    products = result.get("products") or []
+    if products and products[0].get("id") is not None:
+        sessions.remember_products(request.session_id, [str(products[0]["id"])])
+    result.setdefault("ai_mode", "openai" if ai_configured() else "offline")
+    return result
+
+
+async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
 
     pending = cart.pending(request.session_id)
     if pending:
@@ -148,6 +201,14 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
                     if page >= int(last):
                         break
             found = search_products(all_products, message)
+            if not found and re.fullmatch(r"\d{5,}", message):
+                try:
+                    found = [await catalog.product(message)]
+                except CatalogError:
+                    pass
+            if not found and re.search(r"\b(он|она|оно|его|этот|эта|этого|стоимость|цена|наличие|характеристики)\b", message.casefold()):
+                previous_ids = set(sessions.last_product_ids(request.session_id))
+                found = [p for p in all_products if str(p.get("id")) in previous_ids][:3]
             if found:
                 hydrated = []
                 for item in found[:3]:
@@ -182,10 +243,16 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
             raise HTTPException(status_code=502, detail="Не удалось перепроверить карточку товара.") from exc
         state, stock = stock_state(selected)
         if state != "available" or stock is None or stock < 1:
-            alternatives, limitation = find_alternatives(selected, all_products if mode == "live" else [], limit=3)
+            alternatives, limitation = await live_alternatives(selected, all_products)
             if alternatives:
                 explain = "\n".join(f"• {row['product'].get('name') or row['product'].get('sku')}: {row['reason']}" for row in alternatives)
                 answer = f"У выбранного товара нет подтверждённого доступного остатка. Возможные аналоги из каталога:\n{explain}\nЕсли хотите добавить один из них, напишите его артикул и количество."
+                if ai_configured():
+                    try:
+                        reply = await answer_with_openai(message, [selected] + [row["product"] for row in alternatives], sessions.recent(request.session_id), alternatives)
+                        answer = reply.answer_text + "\n\nПроверенные совпадения каталога:\n" + explain
+                    except AiError as exc:
+                        raise HTTPException(status_code=502, detail=str(exc)) from exc
             else:
                 answer = f"У выбранного товара нет подтверждённого доступного остатка. {limitation}"
             return {"answer": answer, "products": [selected] + [r["product"] for r in alternatives], "catalog_mode": mode, "alternatives": alternatives}
@@ -201,27 +268,29 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
             answer = f"Подтвердите добавление: {quantity} шт. «{selected.get('name') or selected.get('sku') or selected['id']}» в демонстрационную корзину. Ответьте «Подтверждаю» или «Отмена»."
         return {"answer": answer, "products": [selected], "catalog_mode": mode, "pending_confirmation": True}
 
-    try:
-        answer = await compose_answer(message, found)
-    except OpenAIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    response_products = found
     alternatives = []
     if mode == "live" and found:
         state, stock = stock_state(found[0])
         if state == "unavailable" or stock == 0:
-            alternatives, limitation = find_alternatives(found[0], all_products, limit=3)
-            if alternatives:
-                answer += "\n\nВозможные аналоги из каталога:\n" + "\n".join(f"• {row['product'].get('name') or row['product'].get('sku')}: {row['reason']}" for row in alternatives)
-                answer += "\nЕсли хотите добавить один, напишите его артикул и количество."
-                response_products += [row["product"] for row in alternatives]
-            else:
-                answer += f"\n\n{limitation}"
+            alternatives, limitation = await live_alternatives(found[0], all_products)
+    response_products = found + [row["product"] for row in alternatives]
+    if ai_configured():
+        try:
+            reply = await answer_with_openai(message, response_products, sessions.recent(request.session_id), alternatives)
+            answer = reply.answer_text
+        except AiError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    else:
+        answer = fallback_answer(message, found)
+    if alternatives:
+        answer += "\n\nПроверенные аналоги из каталога:\n" + "\n".join(f"• {row['product'].get('name') or row['product'].get('sku')}: {row['reason']}" for row in alternatives)
+    elif mode == "live" and found and (stock_state(found[0])[0] == "unavailable"):
+        answer += f"\n\n{limitation}"
     return {
         "answer": answer,
         "products": response_products,
         "alternatives": alternatives,
         "catalog_mode": mode,
-        "ai_mode": "openai" if settings.openai_api_key else "fallback",
-        "model": settings.openai_model if settings.openai_api_key else None,
+        "ai_mode": "openai" if ai_configured() else "offline",
+        "model": settings.openai_model if ai_configured() else None,
     }

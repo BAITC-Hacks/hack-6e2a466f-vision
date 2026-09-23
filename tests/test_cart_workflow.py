@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.cart import DemoCartAdapter
+from backend.session import SessionStore
 from backend import main
 from backend.chat import (
     extract_quantity,
@@ -129,11 +130,14 @@ class ChatEndpointTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.adapter = DemoCartAdapter(Path(self.temp.name) / "cart.sqlite3")
+        self.history = SessionStore(Path(self.temp.name) / "cart.sqlite3")
         self.catalog_patch = patch.object(main, "catalog", FakeCatalog())
         self.cart_patch = patch.object(main, "cart", self.adapter)
+        self.history_patch = patch.object(main, "sessions", self.history)
         self.openai_patch = patch.object(main.settings, "openai_api_key", "")
         self.catalog_patch.start()
         self.cart_patch.start()
+        self.history_patch.start()
         self.openai_patch.start()
         from fastapi.testclient import TestClient
         self.client = TestClient(main.app)
@@ -141,6 +145,7 @@ class ChatEndpointTests(unittest.TestCase):
 
     def tearDown(self):
         self.openai_patch.stop()
+        self.history_patch.stop()
         self.cart_patch.stop()
         self.catalog_patch.stop()
         self.temp.cleanup()

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     ekt_api_password: str = ""
     ekt_api_timeout_seconds: float = 10
     openai_api_key: str = ""
-    openai_model: str = "gpt-6-astra"
+    openai_model: str = ""
     openai_timeout_seconds: float = 30
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

@@ -4,13 +4,14 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#10251f"><title>ЭКТ — помощник по каталогу</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/ux.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar"><a class="brand" href="/"><span class="brand-mark">э</span><span>ЭКТ <small>электротехнический каталог</small></span></a><a class="cart-link" href="/cart">Демо-корзина <span>↗</span></a></header>
     <section class="intro"><div><p class="eyebrow">ПОМОЩНИК ПО КАТАЛОГУ</p><h1>Подберём нужное<br>для вашего проекта.</h1><p class="intro-copy">Спросите о товаре, артикуле или характеристиках. Ответы опираются на каталог.</p></div><div class="intro-icon" aria-hidden="true">⌁</div></section>
     <section class="catalog-panel"><div class="section-heading"><div><p class="eyebrow">КАТАЛОГ EKT.KZ</p><h2>Товары</h2></div><div id="connection" class="connection"><span class="dot"></span><span>Проверяем соединение…</span></div></div><div id="notice" class="notice" hidden></div><div id="products" class="products" aria-live="polite"><div class="skeleton"></div><div class="skeleton"></div></div></section>
-    <section class="chat-panel"><div class="chat-head"><div class="avatar">э</div><div><strong>ЭКТ помощник</strong><span><i></i> Готов помочь с выбором</span></div><button class="reset" id="reset" title="Начать заново" aria-label="Начать заново">↻</button></div><div id="messages" class="messages" aria-live="polite"><div class="message assistant">Здравствуйте! Подскажу по товарам и покажу сведения, доступные в каталоге. С чего начнём?</div></div><form id="chat-form" class="composer"><input id="question" autocomplete="off" placeholder="Например, найдите по артикулу…" aria-label="Сообщение помощнику"><button aria-label="Отправить">↑</button></form><p class="disclaimer">Ответы доступны по сведениям каталога. Неуказанные данные не предполагаются.</p></section>
+    <section class="chat-panel"><div class="chat-head"><div class="avatar">э</div><div><strong>ЭКТ помощник</strong><span><i></i> Готов помочь с выбором</span></div><button class="reset" id="reset" title="Начать заново" aria-label="Начать заново">↻</button></div><div id="messages" class="messages" aria-live="polite"><div class="message assistant">Здравствуйте! Подскажу по товарам и покажу сведения, доступные в каталоге. С чего начнём?</div></div><form id="chat-form" class="composer"><input id="question" autocomplete="off" placeholder="Например, найдите по артикулу…" aria-label="Сообщение помощнику"><button aria-label="Отправить">↑</button></form><p class="disclaimer">В режиме OpenAI вопрос, недавние реплики и найденные сведения каталога отправляются в OpenAI API. Корзина остаётся демонстрационной.</p></section>
     <footer>Демо-консультант для ekt.kz <span>Первый прототип</span></footer>
   </main><script src="/static/app.js" defer></script>
 </body></html>
