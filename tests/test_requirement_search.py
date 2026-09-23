@@ -59,6 +59,21 @@ class RequirementSearchTests(unittest.TestCase):
         self.assertEqual(result["pages_scanned"], 1)
         self.assertEqual(result["products"], [])
 
+    def test_later_page_timeout_reports_partial_coverage(self):
+        def respond(req):
+            if req.url.params.get("page") == "2":
+                raise httpx.ReadTimeout("timeout", request=req)
+            return httpx.Response(200, json={"data": [{"id": 101, "name": "Кабель"}], "page": 1, "per_page": 1})
+
+        with patch("backend.catalog.settings.ekt_api_username", "user"), \
+             patch("backend.catalog.settings.ekt_api_password", "password"):
+            result = asyncio.run(search_requirements(
+                CatalogClient(httpx.MockTransport(respond)), request(article="missing"),
+            ))
+        self.assertEqual(result["status"], "incomplete")
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["pages_scanned"], 1)
+
     def test_detail_failure_never_exposes_unverified_product(self):
         def respond(req):
             if req.url.path.endswith("/detail"):

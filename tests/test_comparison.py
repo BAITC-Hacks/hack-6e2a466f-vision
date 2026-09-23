@@ -78,6 +78,16 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(supplied["rows"], matrix["rows"])
         self.assertNotIn("url", supplied["columns"][0])
 
+    def test_openai_refusal_keeps_comparison_unexplained(self):
+        matrix = build_comparison(requirements(), self.products[:2], "demo")
+        sdk = SimpleNamespace(responses=SimpleNamespace(parse=AsyncMock(return_value=SimpleNamespace(
+            status="incomplete", output_parsed=None,
+        ))))
+        with patch("backend.comparison.settings.openai_api_key", "test-key"), \
+             patch("backend.comparison.settings.openai_model", "test-model"):
+            with self.assertRaisesRegex(AiError, "не вернула объяснение"):
+                asyncio.run(explain_comparison(matrix, client=sdk))
+
 
 class ComparisonRouteTests(unittest.TestCase):
     def test_only_found_ids_can_be_compared(self):

@@ -23,6 +23,18 @@ DEMO_PRODUCTS = [
         "properties": {"номинальный ток": "16 А", "полюса": "1"}, "demo": True,
     }),
     normalize_product({
+        "id": "demo-breaker-conflict", "article": "DEMO-CONFLICT", "name": "Автоматический выключатель 20 А (демо)",
+        "description": "Вымышленная позиция для показа противоречащей характеристики.",
+        "category": "Автоматические выключатели", "price": 760, "currency": "KZT", "quantity": 4,
+        "properties": {"номинальный ток": "20 А", "полюса": "1"}, "demo": True,
+    }),
+    normalize_product({
+        "id": "demo-breaker-unknown", "article": "DEMO-UNKNOWN", "name": "Автоматический выключатель без тока (демо)",
+        "description": "Вымышленная позиция: номинальный ток в карточке не указан.",
+        "category": "Автоматические выключатели", "price": 700, "currency": "KZT", "quantity": 3,
+        "properties": {"полюса": "1"}, "demo": True,
+    }),
+    normalize_product({
         "id": "demo-partial", "article": "DEMO-PARTIAL", "name": "Светильник с неполной карточкой (демо)",
         "description": None, "category": "Светильники", "price": None, "quantity": 2,
         "properties": None, "demo": True,
