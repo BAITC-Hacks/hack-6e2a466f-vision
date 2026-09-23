@@ -60,6 +60,7 @@ def _name_score(product: dict[str, Any], requirements: ShoppingRequirements) -> 
 def _candidate(product: dict[str, Any], requirements: ShoppingRequirements) -> tuple[dict[str, Any] | None, int]:
     attributes = _attributes(product)
     matched = []
+    conflicted = []
     unknown = []
     score = 0
     for item in requirements.requirements:
@@ -73,11 +74,13 @@ def _candidate(product: dict[str, Any], requirements: ShoppingRequirements) -> t
         if (not agrees if negative else agrees):
             matched.append(f"{item.attribute}: {actual}")
             score += 5 if item.required else 2
-        elif item.required:
-            return None, 0
+        else:
+            conflicted.append(f"{item.attribute}: {actual}")
+            score -= 5 if item.required else 1
     return {
         "product": product,
         "matched": matched,
+        "conflicted": conflicted,
         "unknown": unknown,
         "budget_checked": False,
     }, score
@@ -120,7 +123,11 @@ async def search_requirements(
                 detail = await catalog.search_detail(str(item["id"]), refresh=refresh)
             except CatalogError:
                 return None
-            return detail if str(detail.get("id")) == str(item["id"]) else None
+            if str(detail.get("id")) != str(item["id"]):
+                return None
+            if not detail.get("url") and item.get("url"):
+                detail = {**detail, "url": item["url"]}
+            return detail
 
     detailed = await asyncio.gather(*(hydrate(item) for _, item in shortlist))
     scored = []

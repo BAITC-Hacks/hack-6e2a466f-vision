@@ -4,3 +4,5 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 backend/demo_cart.sqlite3*
+DEMO_DAY.md
+TZ_AUDIT.md

@@ -148,6 +148,7 @@
 
   function renderResults(data) {
     results.replaceChildren();
+    const selected = new Set(data.products.slice(0, 4).map(entry => String(entry.product.id)));
     const title = document.createElement('h3');
     title.textContent = data.status === 'incomplete' ? 'Поиск неполон' : data.status === 'not_found' ? 'Товары не найдены' : 'Кандидаты из каталога';
     results.append(title, line(data.message), line(`Просмотрено страниц: ${data.pages_scanned}; проверено карточек: ${data.detail_checked}.`));
@@ -157,16 +158,108 @@
       const item = entry.product;
       const card = document.createElement('article');
       card.className = 'requirements-product';
+      const selectLabel = document.createElement('label');
+      selectLabel.className = 'requirements-select';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selected.has(String(item.id));
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked && selected.size >= 4) {
+          checkbox.checked = false;
+          return;
+        }
+        if (checkbox.checked) selected.add(String(item.id));
+        else selected.delete(String(item.id));
+      });
+      selectLabel.append(checkbox, document.createTextNode('Сравнить'));
+      card.append(selectLabel);
       const name = document.createElement('strong');
       name.textContent = item.name || item.sku || `Товар ${item.id}`;
       card.append(name, line(`ID: ${item.id}${item.sku ? ` · Артикул: ${item.sku}` : ''}`));
       if (item.price != null) card.append(line(`Цена в каталоге: ${item.price}`));
       if (item.stock != null) card.append(line(`Остаток в карточке: ${item.stock}`));
       card.append(line(entry.matched.length ? `Совпало: ${entry.matched.join('; ')}` : 'Совпадение характеристик пока не подтверждено.'));
+      if (entry.conflicted?.length) card.append(line(`Противоречит: ${entry.conflicted.join('; ')}.`, 'requirements-warning'));
       if (entry.unknown.length) card.append(line(`Не удалось проверить: ${entry.unknown.join(', ')}.`));
       if (draft?.max_budget != null) card.append(line('Бюджет требует отдельной проверки валюты и цены.'));
       results.append(card);
     }
+    if (data.products.length >= 2 && draft?.requirements.length) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'requirements-compare-button';
+      button.textContent = 'Сравнить выбранные товары';
+      const comparison = document.createElement('div');
+      comparison.className = 'requirements-comparison';
+      button.addEventListener('click', async () => {
+        if (selected.size < 2 || selected.size > 4) {
+          comparison.replaceChildren(line('Выберите от двух до четырёх товаров.', 'requirements-warning'));
+          return;
+        }
+        button.disabled = true;
+        comparison.replaceChildren(line('Сравниваю проверенные карточки…'));
+        try {
+          const response = await fetch('/api/requirements/compare', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_id: sessionId, product_ids: [...selected]}),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || 'Не удалось сравнить товары.');
+          renderComparison(comparison, payload);
+        } catch (error) {
+          comparison.replaceChildren(line(error.message || 'Ошибка сравнения.', 'requirements-warning'));
+        } finally { button.disabled = false; }
+      });
+      results.append(button, comparison);
+    }
+  }
+
+  function renderComparison(container, payload) {
+    container.replaceChildren();
+    const matrix = payload.matrix;
+    const heading = document.createElement('h3');
+    heading.textContent = 'Сравнение по вашим условиям';
+    container.append(heading);
+    if (!payload.coverage_complete) container.append(line('Поиск охватил не весь каталог.', 'requirements-warning'));
+    const scroll = document.createElement('div');
+    scroll.className = 'requirements-table-scroll';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headingRow = document.createElement('tr');
+    const requirementHeading = document.createElement('th');
+    requirementHeading.textContent = 'Условие';
+    headingRow.append(requirementHeading);
+    for (const column of matrix.columns) {
+      const cell = document.createElement('th');
+      const link = document.createElement('a');
+      link.href = column.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = `${column.name} · ${column.sku || column.id}`;
+      cell.append(link);
+      headingRow.append(cell);
+    }
+    head.append(headingRow);
+    table.append(head);
+    const body = document.createElement('tbody');
+    for (const row of matrix.rows) {
+      const tr = document.createElement('tr');
+      const label = document.createElement('th');
+      label.textContent = `${row.attribute}: ${row.wanted}${row.required ? ' · обязательно' : ''}`;
+      tr.append(label);
+      for (const value of row.cells) {
+        const cell = document.createElement('td');
+        cell.className = `comparison-${value.status === 'совпадает' ? 'match' : value.status === 'противоречит' ? 'conflict' : 'unknown'}`;
+        cell.textContent = `${value.status} · ${value.actual ?? '—'}`;
+        tr.append(cell);
+      }
+      body.append(tr);
+    }
+    table.append(body);
+    scroll.append(table);
+    container.append(scroll, line(payload.explanation));
+    if (matrix.alternative_candidate_ids.length) container.append(line(`Кандидаты на замену по указанным обязательным полям: ${matrix.alternative_candidate_ids.join(', ')}. ${matrix.alternative_note}`));
+    if (payload.ai_mode === 'offline') container.append(line('Объяснение сформировано локально: OpenAI API не настроен.'));
   }
 
   async function runSearch(refresh) {

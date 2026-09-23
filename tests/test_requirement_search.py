@@ -28,7 +28,7 @@ class RequirementSearchTests(unittest.TestCase):
             if req.url.path.endswith("/detail"):
                 return httpx.Response(200, json={"id": 202, "article": "B-16", "name": "Автомат 16 А", "properties": {"NOMINALNYY_TOK": "16 А"}, "quantity": 4})
             if req.url.params.get("page") == "2":
-                return httpx.Response(200, json={"data": [{"id": 202, "article": "B-16", "name": "Автомат 16 А"}], "page": 2, "per_page": 2})
+                return httpx.Response(200, json={"data": [{"id": 202, "article": "B-16", "name": "Автомат 16 А", "url": "https://ekt.kz/catalog/b-16"}], "page": 2, "per_page": 2})
             return httpx.Response(200, json={"data": [{"id": 101, "article": "X-1", "name": "Кабель"}, {"id": 102, "article": "X-2", "name": "Светильник"}], "page": 1, "per_page": 2})
 
         with patch("backend.catalog.settings.ekt_api_username", "user"), patch("backend.catalog.settings.ekt_api_password", "password"):
@@ -41,6 +41,7 @@ class RequirementSearchTests(unittest.TestCase):
         self.assertEqual(first["pages_scanned"], 2)
         self.assertEqual(first["products"][0]["product"]["id"], 202)
         self.assertEqual(first["products"][0]["matched"], ["номинальный ток: 16 А"])
+        self.assertEqual(first["products"][0]["product"]["url"], "https://ekt.kz/catalog/b-16")
         self.assertEqual(first, second)
         self.assertEqual(sum(calls.values()), 3)
 
@@ -82,6 +83,18 @@ class RequirementSearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(result["pages_scanned"], 5)
         self.assertEqual(calls, ["1", "2", "3", "4", "5"])
+
+    def test_conflicting_candidate_remains_visible_for_comparison(self):
+        from backend.catalog import normalize_product
+
+        products = [
+            normalize_product({"id": "match", "name": "Кабель A", "properties": {"сечение": "2,5 мм²"}}),
+            normalize_product({"id": "conflict", "name": "Кабель B", "properties": {"сечение": "4 мм²"}}),
+        ]
+        query = request(terms=["кабель"], required=[{"attribute": "сечение", "value": "2,5 мм²", "required": True}])
+        result = asyncio.run(search_requirements(CatalogClient(), query, demo_products=products))
+        self.assertEqual([row["product"]["id"] for row in result["products"]], ["match", "conflict"])
+        self.assertEqual(result["products"][1]["conflicted"], ["сечение: 4 мм²"])
 
 
 if __name__ == "__main__":

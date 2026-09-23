@@ -15,6 +15,7 @@ from backend.chat import (
     is_confirmation, is_purchase_intent, is_refusal, search_products, stock_state,
 )
 from backend.catalog import CatalogClient, CatalogError
+from backend.comparison import build_comparison, explain_comparison
 from backend.config import settings
 from backend.demo_data import DEMO_PRODUCTS, demo_product
 from backend.requirements import (
@@ -52,6 +53,11 @@ class RequirementsUpdate(BaseModel):
 class RequirementsSearchRequest(BaseModel):
     session_id: str = Field(min_length=8, max_length=100)
     refresh: bool = False
+
+
+class RequirementsCompareRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=100)
+    product_ids: list[str] = Field(min_length=2, max_length=4)
 
 async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     """Hydrate a small relevant shortlist before comparing real catalog characteristics and stock."""
@@ -200,6 +206,29 @@ async def search_saved_requirements(request: RequirementsSearchRequest) -> dict[
         demo_products=None if catalog.configured else DEMO_PRODUCTS,
         refresh=request.refresh,
     )
+
+
+@app.post("/api/requirements/compare")
+async def compare_saved_requirements(request: RequirementsCompareRequest) -> dict[str, Any]:
+    if len(set(request.product_ids)) != len(request.product_ids):
+        raise HTTPException(status_code=422, detail="Выберите разные товары для сравнения.")
+    saved = sessions.get_requirements(request.session_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Сначала сохраните условия подбора.")
+    requirements = ShoppingRequirements.model_validate(saved)
+    found = await search_requirements(catalog, requirements, demo_products=None if catalog.configured else DEMO_PRODUCTS)
+    by_id = {str(row["product"]["id"]): row["product"] for row in found["products"]}
+    if any(product_id not in by_id for product_id in request.product_ids):
+        raise HTTPException(status_code=422, detail="Сравнить можно только товары из текущих результатов поиска.")
+    try:
+        matrix = build_comparison(requirements, [by_id[product_id] for product_id in request.product_ids], found["mode"])
+        explanation, ai_mode = await explain_comparison(matrix)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"matrix": matrix, "explanation": explanation, "ai_mode": ai_mode,
+            "coverage_complete": found["coverage_complete"]}
 
 
 @app.post("/api/chat")
