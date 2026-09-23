@@ -118,8 +118,24 @@ class AlternativesTests(unittest.TestCase):
         self.assertEqual(alternatives, [])
         self.assertIsNotNone(limitation)
 
+    def test_analogue_explains_verified_difference_and_missing_field(self):
+        target = {"id": "old", "category": "Кабели", "stock": 0,
+                  "characteristics": {"тип": "ВВГ", "сечение": "2,5 мм²", "жилы": "3"}}
+        candidate = {"id": "new", "category": "Кабели", "stock": 4,
+                     "characteristics": {"тип": "ВВГ", "сечение": "4 мм²"}}
+        alternatives, _ = find_alternatives(target, [candidate])
+        self.assertEqual([row["product"]["id"] for row in alternatives], ["new"])
+        self.assertEqual(alternatives[0]["matching_attributes"], ["тип"])
+        self.assertEqual(alternatives[0]["different_attributes"], ["сечение"])
+        self.assertEqual(alternatives[0]["missing_attributes"], ["жилы"])
+        self.assertIn("сечение: 2,5 мм² / 4 мм²", alternatives[0]["reason"])
+        self.assertIn("полная совместимость не подтверждена", alternatives[0]["reason"])
+
     def test_unknown_stock_is_not_treated_as_available(self):
         self.assertEqual(stock_state({"stock": None, "availability": None})[0], "unknown")
+        self.assertEqual(stock_state({"stock": True}), ("unknown", None))
+        self.assertEqual(stock_state({"stock": 2.5}), ("unknown", None))
+        self.assertEqual(stock_state({"stock": "3,0"}), ("available", 3))
 
 
 class FakeCatalog:

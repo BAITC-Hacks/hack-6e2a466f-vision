@@ -13,7 +13,7 @@ from openai import APITimeoutError
 from pydantic import ValidationError
 
 from backend import main
-from backend.ai import AIReply, AiError, answer_with_openai, validate_grounding
+from backend.ai import AIReply, AiError, answer_with_openai, compose_grounded_answer, validate_grounding
 from backend.cart import DemoCartAdapter
 from backend.catalog import CatalogClient, CatalogError, normalize_product
 from backend.session import SessionStore
@@ -77,6 +77,13 @@ class OpenAIMockTests(unittest.TestCase):
         self.assertFalse(args["store"])
         context = json.loads(args["input"])
         self.assertNotIn("raw", context["catalog_results"][0])
+
+    def test_unverified_model_prose_is_not_displayed(self):
+        invented = self.reply.model_copy(update={"answer_text": "Доставка завтра и сертификат подтверждён."})
+        answer = compose_grounded_answer(invented, [self.product], "live")
+        self.assertIn("A-1", answer)
+        self.assertNotIn("Доставка завтра", answer)
+        self.assertNotIn("сертификат подтверждён", answer)
 
     def test_schema_and_catalog_ids_are_checked(self):
         with self.assertRaises(ValidationError):
@@ -194,6 +201,18 @@ class WorkflowTests(unittest.TestCase):
             response = self.send("Кабель")
         self.assertEqual(response.status_code, 502)
         self.assertEqual(self.cart.contents(self.session)["total_items"], 0)
+
+    def test_chat_hides_unverified_model_claim(self):
+        invented = AIReply(
+            intent="availability", answer_text="Товар сертифицирован и будет доставлен завтра.",
+            matched_product_ids=["1"], alternative_product_ids=["2"],
+            candidate_quantity=None, needs_clarification=False, clarification_question=None,
+        )
+        with patch.object(main, "answer_with_openai", AsyncMock(return_value=invented)):
+            response = self.send("Расскажите про Кабель силовой старый")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("доставлен завтра", response.json()["answer"])
+        self.assertIn("совпадают характеристики", response.json()["answer"])
 
 
 if __name__ == "__main__":

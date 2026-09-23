@@ -11,6 +11,7 @@ from openai import (
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from backend.config import settings
+from backend.chat import fallback_answer
 from backend.prompt import SYSTEM_PROMPT
 
 
@@ -57,6 +58,21 @@ def validate_grounding(reply: AIReply, products: list[dict[str, Any]], alternati
     if re.search(r"\b(добавлен[аоы]?|оформлен[аоы]?|added to (?:your |the )?cart)\b", reply.answer_text.casefold()):
         raise AiError("Ответ модели содержит неподтверждённое действие. Попробуйте ещё раз.")
     return reply
+
+
+def compose_grounded_answer(reply: AIReply, products: list[dict[str, Any]], mode: str) -> str:
+    """Use the model's validated selection, but display product facts only from backend cards.
+
+    Free-form model prose cannot be proved against arbitrary catalog fields, so it is not
+    sent to the buyer. The cloud model still classifies the request and selects IDs.
+    """
+    selected = set(reply.matched_product_ids)
+    verified = [product for product in products if str(product.get("id")) in selected]
+    if verified:
+        return fallback_answer("", verified, mode)
+    if products:
+        return "Не удалось однозначно выбрать товар по вопросу. Уточните артикул или нужную характеристику."
+    return fallback_answer("", [], mode)
 
 
 async def answer_with_openai(

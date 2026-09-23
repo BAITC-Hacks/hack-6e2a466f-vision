@@ -42,6 +42,21 @@ class ComparisonTests(unittest.TestCase):
         self.assertIsNone(matrix["rows"][0]["cells"][2]["actual"])
         self.assertTrue(all(column["url"].startswith("/api/products/") for column in matrix["columns"]))
         self.assertEqual(matrix["alternative_candidate_ids"], [])
+        self.assertEqual([column["availability_display"] for column in matrix["columns"]],
+                         ["0 шт.", "3 шт.", "3 шт."])
+        self.assertTrue(all(column["price_display"] == "нет данных" for column in matrix["columns"]))
+
+    def test_price_and_availability_are_part_of_verified_columns(self):
+        priced = normalize_product({"id": "priced", "name": "Кабель с ценой", "price": 1200,
+                                    "currency": "KZT", "quantity": 2, "properties": {"сечение": "2,5 мм²"}})
+        unknown = normalize_product({"id": "unknown", "name": "Кабель без цены",
+                                     "properties": {"сечение": "2,5 мм²"}})
+        matrix = build_comparison(requirements(), [priced, unknown], "demo")
+        self.assertEqual(matrix["columns"][0]["price_display"], "1200 KZT")
+        self.assertEqual(matrix["columns"][0]["availability_display"], "2 шт.")
+        self.assertEqual(matrix["columns"][1]["price_display"], "нет данных")
+        self.assertEqual(matrix["columns"][1]["availability_display"], "нет данных")
+        self.assertIn("price_display", [item["id"] for item in sentence_options(matrix)])
 
     def test_alternative_requires_confirmed_required_fields_and_stock(self):
         replacement = normalize_product({"id": "four", "name": "Кабель D", "properties": {"сечение": "2,5 мм²"}, "quantity": 2})

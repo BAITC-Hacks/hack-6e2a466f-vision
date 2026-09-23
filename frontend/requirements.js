@@ -316,6 +316,18 @@
     head.append(headingRow);
     table.append(head);
     const body = document.createElement('tbody');
+    for (const [title, key] of [['Цена', 'price_display'], ['Наличие', 'availability_display']]) {
+      const tr = document.createElement('tr');
+      const label = document.createElement('th');
+      label.textContent = title;
+      tr.append(label);
+      for (const column of matrix.columns) {
+        const cell = document.createElement('td');
+        cell.textContent = column[key] || 'нет данных';
+        tr.append(cell);
+      }
+      body.append(tr);
+    }
     for (const row of matrix.rows) {
       const tr = document.createElement('tr');
       const label = document.createElement('th');

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend.ai import AiError, answer_with_openai
+from backend.ai import AiError, answer_with_openai, compose_grounded_answer
 from backend.cart import DemoCartAdapter
 from backend.chat import (
     extract_quantity, fallback_answer, find_alternatives,
@@ -496,7 +496,8 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
                 if ai_configured():
                     try:
                         reply = await answer_with_openai(message, [selected] + [row["product"] for row in alternatives], sessions.recent(request.session_id), alternatives)
-                        answer = reply.answer_text + "\n\nПроверенные совпадения каталога:\n" + explain
+                        answer = compose_grounded_answer(reply, [selected] + [row["product"] for row in alternatives], mode)
+                        answer += "\n\nПроверенные варианты для замены:\n" + explain
                     except AiError as exc:
                         raise HTTPException(status_code=502, detail=str(exc)) from exc
             else:
@@ -523,7 +524,7 @@ async def _chat_impl(request: ChatRequest, message: str) -> dict[str, Any]:
     if ai_configured():
         try:
             reply = await answer_with_openai(message, response_products, sessions.recent(request.session_id), alternatives)
-            answer = reply.answer_text
+            answer = compose_grounded_answer(reply, response_products, mode)
         except AiError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     else:

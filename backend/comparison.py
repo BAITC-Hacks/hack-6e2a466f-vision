@@ -42,8 +42,23 @@ def build_comparison(requirements: ShoppingRequirements, products: list[dict[str
     ids = [str(item["id"]) for item in products]
     if len(set(ids)) != len(ids):
         raise ValueError("Товары для сравнения не должны повторяться.")
-    columns = [{"id": str(item["id"]), "name": item.get("name") or item.get("sku") or str(item["id"]),
-                "sku": item.get("sku"), "url": product_page_url(item, mode)} for item in products]
+    columns = []
+    for item in products:
+        state, stock = stock_state(item)
+        price = item.get("price")
+        currency = item.get("currency")
+        price_display = (f"{price} {currency}" if currency else f"{price} (валюта не указана)") if price is not None and price != "" else "нет данных"
+        if stock is not None:
+            availability_display = f"{stock} шт."
+        elif state == "available":
+            availability_display = "в наличии; точный остаток не указан"
+        elif state == "unavailable":
+            availability_display = "нет в наличии; точный остаток не указан"
+        else:
+            availability_display = "нет данных"
+        columns.append({"id": str(item["id"]), "name": item.get("name") or item.get("sku") or str(item["id"]),
+                        "sku": item.get("sku"), "url": product_page_url(item, mode),
+                        "price_display": price_display, "availability_display": availability_display})
     features = [_attributes(item) for item in products]
     rows = []
     for requirement in requirements.requirements:
@@ -79,6 +94,10 @@ def sentence_options(matrix: dict[str, Any]) -> list[dict[str, str]]:
             actual = cell["actual"] if cell["actual"] is not None else "нет данных"
             parts.append(f"{column['name']} (ID {column['id']}): {actual} — {cell['status']}")
         options.append({"id": f"r{index}", "text": f"{row['attribute']} (нужно: {row['wanted']}): " + "; ".join(parts) + "."})
+    for key, label in (("price_display", "Цена"), ("availability_display", "Наличие")):
+        if any(column[key] != "нет данных" for column in matrix["columns"]):
+            options.append({"id": key, "text": label + ": " + "; ".join(
+                f"{column['name']} (ID {column['id']}): {column[key]}" for column in matrix["columns"]) + "."})
     return options
 
 
@@ -108,7 +127,9 @@ async def explain_comparison(matrix: dict[str, Any], client: Any | None = None) 
         return " ".join(row["text"] for row in options[:2]), "offline"
     context = {
         "verified_matrix": {
-            "columns": [{"id": column["id"], "name": column["name"]} for column in matrix["columns"]],
+            "columns": [{"id": column["id"], "name": column["name"],
+                         "price": column["price_display"], "availability": column["availability_display"]}
+                        for column in matrix["columns"]],
             "rows": matrix["rows"],
         },
         "allowed_sentences": options,

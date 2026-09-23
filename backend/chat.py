@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -42,14 +43,14 @@ def fallback_answer(question: str, products: list[dict[str, Any]], mode: str = "
 
 def stock_state(product: dict[str, Any]) -> tuple[str, int | None]:
     stock = product.get("stock")
-    if isinstance(stock, bool):
-        stock_count = int(stock)
-    elif isinstance(stock, (int, float)):
-        stock_count = int(stock)
-    elif isinstance(stock, str) and re.fullmatch(r"\s*-?\d+(?:[.,]\d+)?\s*", stock):
-        stock_count = int(float(stock.replace(",", ".")))
-    else:
-        stock_count = None
+    stock_count = None
+    if not isinstance(stock, bool) and isinstance(stock, (int, float, str)):
+        try:
+            number = Decimal(str(stock).strip().replace(",", "."))
+            if number.is_finite() and number == number.to_integral_value() and number >= 0:
+                stock_count = int(number)
+        except (InvalidOperation, ValueError):
+            pass
     availability = product.get("availability")
     if stock_count is not None:
         return ("available" if stock_count > 0 else "unavailable"), max(0, stock_count)
@@ -89,7 +90,7 @@ def _features(product: dict[str, Any]) -> dict[str, str]:
 def find_alternatives(target: dict[str, Any], products: list[dict[str, Any]], limit: int = 3) -> tuple[list[dict[str, Any]], str | None]:
     target_features = _features(target)
     target_category = str(target.get("category") or "").casefold().strip()
-    candidates: list[tuple[int, dict[str, Any], list[str], bool, int | None]] = []
+    candidates: list[tuple[int, dict[str, Any], list[str], list[str], list[str], bool, int | None]] = []
     for product in products:
         if str(product.get("id")) == str(target.get("id")) or not product.get("id"):
             continue
@@ -98,22 +99,35 @@ def find_alternatives(target: dict[str, Any], products: list[dict[str, Any]], li
             continue
         features = _features(product)
         shared = [key for key in target_features.keys() & features.keys() if target_features[key] == features[key]]
+        different = [key for key in target_features.keys() & features.keys() if target_features[key] != features[key]]
+        missing = [key for key in target_features if key not in features]
         same_category = bool(target_category and target_category == str(product.get("category") or "").casefold().strip())
         # A broad category alone is not enough evidence of a compatible replacement.
         if not shared:
             continue
-        candidates.append((len(shared) * 2 + int(same_category), product, sorted(shared), same_category, stock))
+        candidates.append((len(shared) * 2 - len(different) + int(same_category), product,
+                           sorted(shared), sorted(different), sorted(missing), same_category, stock))
     candidates.sort(key=lambda row: row[0], reverse=True)
     result = []
-    for _, product, shared, same_category, stock in candidates[:limit]:
+    for _, product, shared, different, missing, same_category, stock in candidates[:limit]:
         reasons = []
+        product_features = _features(product)
         if same_category:
             reasons.append(f"та же категория: {product['category']}")
         if shared:
-            reasons.append("совпадают характеристики: " + ", ".join(shared[:3]))
+            reasons.append("совпадают характеристики: " + ", ".join(
+                f"{key}: {target_features[key]}" for key in shared[:3]))
+        if different:
+            reasons.append("различаются характеристики: " + ", ".join(
+                f"{key}: {target_features[key]} / {product_features[key]}" for key in different[:3]))
+        if missing:
+            reasons.append("у варианта нет данных по: " + ", ".join(missing[:3]))
         if stock is not None:
             reasons.append(f"остаток: {stock}")
-        result.append({"product": product, "reason": "; ".join(reasons)})
+        reasons.append("похожий вариант для проверки; полная совместимость не подтверждена")
+        result.append({"product": product, "reason": "; ".join(reasons),
+                       "matching_attributes": shared, "different_attributes": different,
+                       "missing_attributes": missing})
     limitation = None if result else "В каталоге недостаточно общих характеристик и данных о наличии, чтобы надёжно сопоставить аналог."
     return result, limitation
 
