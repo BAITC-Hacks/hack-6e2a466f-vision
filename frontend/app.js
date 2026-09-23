@@ -26,8 +26,8 @@ async function loadCatalog() {
     const state = await stateResponse.json();
     const catalog = await productsResponse.json();
     status.className = `connection ${state.mode}`;
-    status.querySelector('span:last-child').textContent = state.mode === 'live' ? 'Live-каталог подключён' : 'Демо-режим';
-    $('#notice').textContent = state.message;
+    status.querySelector('span:last-child').textContent = `${state.mode === 'live' ? 'Live-каталог' : 'Демо-каталог'} · ${state.ai_mode === 'openai' ? 'OpenAI API' : 'локальный ответ'}`;
+    $('#notice').textContent = `${state.message} ${state.ai_mode === 'openai' ? `Ответы через OpenAI (${state.model || 'настроенная модель'}).` : 'Для ответов OpenAI задайте OPENAI_API_KEY.'}`;
     $('#notice').hidden = false;
     renderProducts(catalog.products || [], catalog.mode);
   } catch {
@@ -46,15 +46,20 @@ $('#chat-form').addEventListener('submit', async (event) => {
   if (!question) return;
   addMessage(question, 'user');
   input.value = '';
-  const normalized = question.toLocaleLowerCase('ru');
-  const cards = [...productsNode.querySelectorAll('.product')];
-  const match = cards.find((card) => normalized.split(/\s+/).some((term) => term.length > 2 && card.textContent.toLocaleLowerCase('ru').includes(term)));
-  if (/привет|здравствуй/.test(normalized)) {
-    addMessage('Здравствуйте! Напишите название или артикул товара — покажу совпадения из каталога.');
-  } else if (match) {
-    addMessage(`${match.querySelector('h3')?.textContent}. ${match.querySelector('p')?.textContent} ${match.querySelector('.product-price')?.textContent}`);
-  } else {
-    addMessage('Пока это первая часть прототипа: поиск по каталогу отображает найденные позиции выше. Сейчас точного совпадения среди загруженных товаров нет.');
+  const submit = event.submitter || $('#chat-form button');
+  submit.disabled = true;
+  submit.textContent = '…';
+  try {
+    const response = await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: question})});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Не удалось получить ответ. Попробуйте ещё раз.');
+    addMessage(result.answer);
+    if (result.products?.length) renderProducts(result.products, result.catalog_mode);
+  } catch (error) {
+    addMessage(error.message || 'Не удалось связаться с помощником. Попробуйте ещё раз.');
+  } finally {
+    submit.disabled = false;
+    submit.textContent = '↑';
   }
 });
 
