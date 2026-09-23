@@ -21,6 +21,7 @@ from backend.requirements import (
     DEMO_ATTRIBUTES, LIVE_ATTRIBUTES, ShoppingRequirements, extract_with_openai,
     offline_extract, validate_attributes,
 )
+from backend.requirement_search import search_requirements
 from backend.session import SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +47,11 @@ class ChatRequest(BaseModel):
 
 class RequirementsUpdate(BaseModel):
     requirements: ShoppingRequirements
+
+
+class RequirementsSearchRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=100)
+    refresh: bool = False
 
 async def live_alternatives(target: dict[str, Any], products: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     """Hydrate a small relevant shortlist before comparing real catalog characteristics and stock."""
@@ -181,6 +187,19 @@ async def update_shopping_requirements(session_id: str, request: RequirementsUpd
         updated = updated.model_copy(update={"clarification_question": None})
     sessions.save_requirements(session_id, updated.model_dump())
     return {"requirements": updated.model_dump(), "available_attributes": available}
+
+
+@app.post("/api/requirements/search")
+async def search_saved_requirements(request: RequirementsSearchRequest) -> dict[str, Any]:
+    saved = sessions.get_requirements(request.session_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Сначала разберите и сохраните условия подбора.")
+    requirements = ShoppingRequirements.model_validate(saved)
+    return await search_requirements(
+        catalog, requirements,
+        demo_products=None if catalog.configured else DEMO_PRODUCTS,
+        refresh=request.refresh,
+    )
 
 
 @app.post("/api/chat")

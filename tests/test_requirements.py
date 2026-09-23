@@ -123,6 +123,19 @@ class RequirementRouteTests(unittest.TestCase):
         self.assertIn("Модель не ответила", response.json()["detail"])
         self.assertIsNone(self.store.get_requirements(self.session))
 
+    def test_saved_requirements_drive_demo_search(self):
+        with patch.object(main, "catalog", SimpleNamespace(configured=False)):
+            missing = self.client.post("/api/requirements/search", json={"session_id": self.session})
+            self.assertEqual(missing.status_code, 404)
+            saved = self.client.put(f"/api/requirements/{self.session}", json={"requirements": sample(max_budget=None, budget_currency=None).model_dump()})
+            self.assertEqual(saved.status_code, 200)
+            found = self.client.post("/api/requirements/search", json={"session_id": self.session})
+        self.assertEqual(found.status_code, 200)
+        result = found.json()
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["mode"], "demo")
+        self.assertEqual(result["products"][0]["product"]["sku"], "DEMO-IN")
+
 
 if __name__ == "__main__":
     unittest.main()

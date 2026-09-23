@@ -1,4 +1,4 @@
-/* Editable extraction preview. Search-by-requirements follows in the next extension sprint. */
+/* Editable requirements and bounded catalog candidate search. */
 (() => {
   const form = document.querySelector('#requirements-form');
   if (!form) return;
@@ -7,6 +7,7 @@
   const panel = document.querySelector('#requirements-draft');
   const fields = document.querySelector('#requirements-fields');
   const question = document.querySelector('#requirements-question');
+  const results = document.querySelector('#requirements-results');
   const sessionId = localStorage.getItem('ekt-demo-session');
   let draft = null;
   let attributes = [];
@@ -35,8 +36,8 @@
       field.maxLength = 160;
       field.placeholder = options.placeholder || 'Не указано';
     }
-    field.addEventListener('input', () => onChange(field.value));
-    field.addEventListener('change', () => onChange(field.value));
+    field.addEventListener('input', () => { onChange(field.value); results.replaceChildren(); });
+    field.addEventListener('change', () => { onChange(field.value); results.replaceChildren(); });
     label.append(field);
     return label;
   }
@@ -71,12 +72,12 @@
       const required = document.createElement('input');
       required.type = 'checkbox';
       required.checked = item.required;
-      required.addEventListener('change', () => { item.required = required.checked; });
+      required.addEventListener('change', () => { item.required = required.checked; results.replaceChildren(); });
       requiredLabel.append(required, document.createTextNode('Обязательно'));
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.textContent = 'Убрать';
-      remove.addEventListener('click', () => { draft.requirements.splice(index, 1); render(); });
+      remove.addEventListener('click', () => { draft.requirements.splice(index, 1); results.replaceChildren(); render(); });
       row.append(requiredLabel, remove);
       fields.append(row);
     });
@@ -99,6 +100,7 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Не удалось разобрать запрос.');
       draft = result.requirements;
+      results.replaceChildren();
       attributes = result.available_attributes;
       feedback.textContent = result.ai_mode === 'openai' ? 'Условия распознаны через OpenAI. Проверьте их перед подбором.' : 'Offline demo — OpenAI API is not configured. Условия выделены локальными правилами.';
       render();
@@ -111,11 +113,12 @@
   document.querySelector('#requirements-add').addEventListener('click', () => {
     if (!draft || !attributes.length) return;
     draft.requirements.push({attribute: attributes[0], value: '', required: true});
+    results.replaceChildren();
     render();
   });
 
-  document.querySelector('#requirements-save').addEventListener('click', async () => {
-    if (!draft) return;
+  async function saveDraft() {
+    if (!draft) return false;
     try {
       const response = await fetch(`/api/requirements/${encodeURIComponent(sessionId)}`, {
         method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({requirements: draft}),
@@ -124,18 +127,74 @@
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Проверьте заполненные условия.');
       draft = result.requirements;
       feedback.className = 'requirements-feedback';
-      feedback.textContent = 'Исправления сохранены для этого диалога. Для поиска по артикулу или названию используйте чат.';
+      feedback.textContent = 'Условия сохранены. Можно искать товары.';
       render();
+      return true;
     } catch (error) {
       feedback.className = 'requirements-feedback error';
       feedback.textContent = error.message || 'Не удалось сохранить условия.';
+      return false;
     }
-  });
+  }
+
+  document.querySelector('#requirements-save').addEventListener('click', saveDraft);
+
+  function line(text, className = '') {
+    const node = document.createElement('p');
+    node.textContent = text;
+    node.className = className;
+    return node;
+  }
+
+  function renderResults(data) {
+    results.replaceChildren();
+    const title = document.createElement('h3');
+    title.textContent = data.status === 'incomplete' ? 'Поиск неполон' : data.status === 'not_found' ? 'Товары не найдены' : 'Кандидаты из каталога';
+    results.append(title, line(data.message), line(`Просмотрено страниц: ${data.pages_scanned}; проверено карточек: ${data.detail_checked}.`));
+    if (data.status === 'found' && !data.coverage_complete) results.append(line('Охват неполный: могут быть и другие позиции.', 'requirements-warning'));
+    if (data.status === 'not_found') results.append(line('Подходящих позиций в просмотренном каталоге нет.'));
+    for (const entry of data.products) {
+      const item = entry.product;
+      const card = document.createElement('article');
+      card.className = 'requirements-product';
+      const name = document.createElement('strong');
+      name.textContent = item.name || item.sku || `Товар ${item.id}`;
+      card.append(name, line(`ID: ${item.id}${item.sku ? ` · Артикул: ${item.sku}` : ''}`));
+      if (item.price != null) card.append(line(`Цена в каталоге: ${item.price}`));
+      if (item.stock != null) card.append(line(`Остаток в карточке: ${item.stock}`));
+      card.append(line(entry.matched.length ? `Совпало: ${entry.matched.join('; ')}` : 'Совпадение характеристик пока не подтверждено.'));
+      if (entry.unknown.length) card.append(line(`Не удалось проверить: ${entry.unknown.join(', ')}.`));
+      if (draft?.max_budget != null) card.append(line('Бюджет требует отдельной проверки валюты и цены.'));
+      results.append(card);
+    }
+  }
+
+  async function runSearch(refresh) {
+    if (!draft || !await saveDraft()) return;
+    const buttons = [document.querySelector('#requirements-search'), document.querySelector('#requirements-refresh')];
+    buttons.forEach(button => { button.disabled = true; });
+    results.replaceChildren(line('Ищу позиции в каталоге…'));
+    try {
+      const response = await fetch('/api/requirements/search', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_id: sessionId, refresh}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить поиск.');
+      renderResults(data);
+    } catch (error) {
+      results.replaceChildren(line(error.message || 'Поиск не выполнен.', 'requirements-warning'));
+    } finally { buttons.forEach(button => { button.disabled = false; }); }
+  }
+
+  document.querySelector('#requirements-search').addEventListener('click', () => runSearch(false));
+  document.querySelector('#requirements-refresh').addEventListener('click', () => runSearch(true));
 
   document.addEventListener('ekt:session-reset', () => {
     draft = null;
     input.value = '';
     feedback.textContent = '';
+    results.replaceChildren();
     render();
   });
 
